@@ -900,6 +900,7 @@ async function land(id,p){ // the new 45 flies into its slot and clicks in
 function stripHash(){ try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){} }
 function handleHash(){
   const hs=location.hash; if(!hs||hs.length<2) return;
+  if(hs==='#setup'){ stripHash(); openSettings(); return; }
   if(hs.slice(0,5)==='#add='){ const raw=hs.slice(5); stripHash(); arrivalAdd(raw); return; }
   const q=new URLSearchParams(hs.slice(1));
   if(q.get('pair')){ takePair(q.get('pair')); stripHash(); render(); scheduleSync(50); return; }
