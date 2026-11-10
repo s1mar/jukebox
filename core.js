@@ -116,6 +116,10 @@ function normalize(d){
   return {v:1,songs:d.songs||{},notes:d.notes||{},plays:d.plays||{},seen:d.seen||{}};
 }
 function newer(a,b){ if(!a) return b; if(!b) return a; return (b.ts||0)>(a.ts||0)?b:a; }
+/* taking a record out and putting it back are timed facts of their own: the later one wins,
+   whatever else changed on the record since (a title fix, a play, a ghost mark) */
+const delOf=x=>x?(x.delAt||(x.deleted?Math.max(x.ts||0,(x.addedAt||0)+1):0)):0; // an old-format removal came after its add
+const liveOf=x=>x?(x.liveAt||(!x.deleted&&!x.delAt?Math.max(x.addedAt||0,x.ts||0):x.addedAt)||0):0; // old-format records: a live copy counts its last change as live
 function mergeDrops(a,b){
   const m=new Map();
   for(const x of [...(a||[]),...(b||[])]) m.set(x.by+'|'+x.at,x);
@@ -129,6 +133,8 @@ function merge(a,b){
     const s=Object.assign({},w);
     s.drops=mergeDrops(sa&&sa.drops,sb&&sb.drops);
     if(sa&&sb){ const first=(sa.addedAt||Infinity)<=(sb.addedAt||Infinity)?sa:sb; s.addedAt=first.addedAt; s.addedBy=first.addedBy; s.claim=first.claim||first.slot; }
+    const delAt=Math.max(delOf(sa),delOf(sb)), liveAt=Math.max(liveOf(sa),liveOf(sb));
+    if(delAt) s.delAt=delAt; else delete s.delAt; s.liveAt=liveAt; s.deleted=delAt>liveAt;
     out.songs[id]=s;
   }
   for(const id of new Set([...Object.keys(a.notes),...Object.keys(b.notes)])) out.notes[id]=Object.assign({},newer(a.notes[id],b.notes[id]));
@@ -147,12 +153,12 @@ function merge(a,b){
    moves to the end. */
 function fixSlots(d){
   const songs=Object.values(d.songs);
-  for(const s of songs) if(!s.claim) s.claim=s.slot||0;
-  songs.sort((x,y)=>(x.addedAt-y.addedAt)||(x.id<y.id?-1:1));
-  const used=new Set(); let max=0;
-  for(const s of songs) if(s.claim>max) max=s.claim;
+  for(const s of songs){ if(!s.claim) s.claim=s.slot||0; if(!(s.claim>0&&s.claim<1e6)) s.claim=0; } // corrupt numbers just move to the end
+  songs.sort((x,y)=>((x.addedAt||0)-(y.addedAt||0))||(x.id<y.id?-1:1));
+  const used=new Set(), claimed=new Set(songs.map(s=>s.claim).filter(Boolean)); let max=0;
   for(const s of songs){
-    if(!s.claim||used.has(s.claim)) s.slot=++max; else s.slot=s.claim;
+    if(!s.claim||used.has(s.claim)){ do s.slot=++max; while(claimed.has(s.slot)||used.has(s.slot)); } // a clash loser takes a number nobody claimed
+    else { s.slot=s.claim; if(s.claim>max) max=s.claim; }
     used.add(s.slot);
   }
   return d;
@@ -167,8 +173,8 @@ function totalPlays(d,id){ const p=d.plays[id]||{}; let t=0; for(const k in p) t
 
 /* ---------- song of the day: same answer on both phones ---------- */
 function hash32(str){ let h=2166136261>>>0; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619)>>>0; } return h>>>0; }
-function songOfDay(d,dateStr){
-  const ids=activeSongs(d).filter(s=>!s.ghost).map(s=>s.id).sort();
+function songOfDay(d,dateStr,dayStart){
+  const ids=activeSongs(d).filter(s=>!s.ghost&&(!dayStart||Math.max(s.addedAt||0,s.liveAt||0)<dayStart)).map(s=>s.id).sort();
   if(!ids.length) return null;
   return ids[hash32('jukebox:'+dateStr)%ids.length];
 }
