@@ -490,6 +490,7 @@ window.onYouTubeIframeAPIReady=function(){
         if(e.data===1){ setPlaying(true);
           if(current&&!current.counted&&me){ current.counted=true; const id=current.songId;
             mutate(d=>{ if(!d.plays[id]) d.plays[id]={}; d.plays[id][me]=(d.plays[id][me]||0)+1; },15000); } }
+        else if(e.data===3) setPlaying(true); // buffering, or an ad before the song: the needle is down either way
         else if(e.data===2||e.data===0) setPlaying(false);
       },
       onError(e){
