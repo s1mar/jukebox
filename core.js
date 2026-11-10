@@ -80,19 +80,21 @@ function extractSpotify(input){
   if(input==null) return {error:'empty'};
   const s=decodeFully(String(input).trim());
   if(!s) return {error:'empty'};
-  let m=s.match(/spotify:(track|album|playlist|episode|show|artist):([A-Za-z0-9]{22})(?![A-Za-z0-9])/);
-  if(m) return m[1]==='track'?{id:m[2]}:{error:'sp_'+m[1]};
   const url=unwrap(firstUrl(s),0);
   if(url){
     const host=url.hostname.toLowerCase();
     if(SP_SHORT.includes(host)) return {error:'sp_short'};
     if(SP_HOSTS.includes(host)){
       const parts=url.pathname.split('/').filter(Boolean).filter(p=>!/^intl-[a-z-]+$/i.test(p)&&p!=='embed');
-      if(parts[0]==='track'&&/^[A-Za-z0-9]{22}$/.test(parts[1]||'')) return {id:parts[1]};
+      const pid=(parts[1]||'').match(/^[A-Za-z0-9]{22}(?![A-Za-z0-9])/);
+      if(parts[0]==='track'&&pid) return {id:pid[0]};
+      const hl=(url.searchParams.get('highlight')||'').match(/^spotify:track:([A-Za-z0-9]{22})$/);
+      if(hl) return {id:hl[1]};
       if(['album','playlist','episode','show','artist'].includes(parts[0])) return {error:'sp_'+parts[0]};
-      return {error:'nomatch'};
     }
   }
+  let m=s.match(/spotify:(track|album|playlist|episode|show|artist):([A-Za-z0-9]{22})(?![A-Za-z0-9])/);
+  if(m) return m[1]==='track'?{id:m[2]}:{error:'sp_'+m[1]};
   m=s.match(/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:embed\/)?(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]{22})(?![A-Za-z0-9])/i);
   if(m) return m[1].toLowerCase()==='track'?{id:m[2]}:{error:'sp_'+m[1].toLowerCase()};
   return {error:'nomatch'};
@@ -174,7 +176,7 @@ function totalPlays(d,id){ const p=d.plays[id]||{}; let t=0; for(const k in p) t
 /* ---------- song of the day: same answer on both phones ---------- */
 function hash32(str){ let h=2166136261>>>0; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,16777619)>>>0; } return h>>>0; }
 function songOfDay(d,dateStr,dayStart){
-  const ids=activeSongs(d).filter(s=>!s.ghost&&(!dayStart||Math.max(s.addedAt||0,s.liveAt||0)<dayStart)).map(s=>s.id).sort();
+  const ids=activeSongs(d).filter(s=>!s.ghost&&(!dayStart||Math.max(s.addedAt||0,s.delAt?(s.liveAt||0):0)<dayStart)).map(s=>s.id).sort();
   if(!ids.length) return null;
   return ids[hash32('jukebox:'+dateStr)%ids.length];
 }

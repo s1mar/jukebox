@@ -467,15 +467,17 @@ if(/(^|\.)localhost$|^127\.0\.0\.1$|^\[::1\]$/.test(location.hostname)){ const o
 function gh(extra){ return Object.assign({Authorization:'Bearer '+pair.t,Accept:'application/vnd.github+json'},extra||{}); }
 function fileUrl(){ return API+'/repos/'+pair.r+'/contents/'+CONFIG.file; }
 class GHError extends Error{ constructor(s){ super('github '+s); this.status=s; } }
+let ghWait=0; // seconds GitHub asked us to wait after a rate limit
+const ghCode=r=>{ if(r.status===403&&(r.headers.get('x-ratelimit-remaining')==='0'||r.headers.get('retry-after'))){ ghWait=Math.min(+r.headers.get('retry-after')||60,900); return 429; } return r.status; };
 async function ghGet(){
   const r=await fetch(fileUrl()+'?_='+Date.now(),{headers:gh(),cache:'no-store'});
   if(r.status===404) return {doc:C.newDoc(),sha:null,missing:true};
-  if(!r.ok) throw new GHError(r.status);
+  if(!r.ok) throw new GHError(ghCode(r));
   const j=await r.json();
   let text=j.content?C.b64decode(j.content):'';
   if(!text&&j.size>0){ // files over 1 MB come back without content
     const raw=await fetch(fileUrl()+'?_='+Date.now(),{headers:gh({Accept:'application/vnd.github.raw'}),cache:'no-store'});
-    if(!raw.ok) throw new GHError(raw.status); text=await raw.text();
+    if(!raw.ok) throw new GHError(ghCode(raw)); text=await raw.text();
   }
   let d; try{ d=text?JSON.parse(text):C.newDoc(); }catch(e){ throw new GHError('parse'); } // never overwrite a file we cannot read
   return {doc:d,sha:j.sha};
@@ -512,18 +514,20 @@ async function runSync(){
       const sent=stable(doc); const r=await ghPut(doc,remote.sha);
       if(r.ok){ dirty=stable(doc)!==sent; persist(); result='ok'; break; }
       if(r.status===409||r.status===422){ await wait(250+Math.random()*500); continue; } // someone wrote first: re-read, merge, retry
-      throw new GHError(r.status);
+      throw new GHError(ghCode(r));
     }
   }catch(e){
     result=e.status===401?'expired':(e.status===403||e.status===404)?'denied':'offline';
   }
+  if(!pair){ setNet('local'); return 'local'; }
   if(result==='ok') lastSync=Date.now();
   setNet(result);
-  if(result==='retry'||result==='offline') scheduleSync(15000); // keep trying quietly
+  if(result==='retry'||result==='offline'){ scheduleSync(Math.max(15000,ghWait*1000)); ghWait=0; } // keep trying quietly
   return result;
 }
 function setNet(s){
   netState=s; const d=$('#netdot'); d.className='dot '+s;
+  if(pair&&(s==='expired'||s==='denied')) LS.set('jb.dead',pair.t); else if(s==='ok') LS.del('jb.dead'); // remembered across reloads: an old link may then replace a dead key
   d.title={ok:'Shared and saved',syncing:'Saving',offline:'Offline, will retry',retry:'Busy, will retry',expired:'Key expired',denied:'Key has no access',local:'Only on this phone'}[s]||'';
   if((s==='expired'||s==='denied')&&!warned){ warned=true;
     callout(me===CONFIG.names[0]?'THE KEY STOPPED WORKING. CHECK SETTINGS':'THE KEY RAN OUT. ASK '+CONFIG.names[0].toUpperCase()+' FOR A NEW LINK AND OPEN IT','bad',5000); }
@@ -646,7 +650,7 @@ function renderGrid(){
   const g=$('#grid'), songs=C.activeSongs(doc);
   $('#count').textContent=songs.length?songs.length+(songs.length===1?' record':' records'):'';
   g.replaceChildren();
-  if(!songs.length){ g.append(h('div',{class:'empty'},h('b',{text:'The jukebox is empty.'}),h('span',{text:'Paste a YouTube or Spotify link above and drop the first coin. It becomes A1.'}))); return; }
+  if(!songs.length){ g.append(h('div',{class:'empty'},h('b',{text:'The jukebox is empty.'}),h('span',{text:'Paste a YouTube or Spotify link above and drop the first coin. It becomes '+C.slotLabel(C.nextSlot(doc))+'.'}))); return; }
   for(const s of songs){
     const d=disp(s), plays=C.totalPlays(doc,s.id), wear=plays>=16?3:plays>=8?2:plays>=3?1:0;
     const fresh=isNewToMe(s), chalk=!fresh&&look[s.id]&&hasNewForMe(s);
@@ -663,7 +667,7 @@ function renderGrid(){
 const retried=new Set();
 function retitle(songs){ // songs saved while offline get their titles later
   for(const s of songs) if(!s.title&&!retried.has(s.id)){ retried.add(s.id);
-    fetchMeta(s.id).then(m=>{ if(m.title&&doc.songs[s.id]&&!doc.songs[s.id].title) mutate(d=>{ const t=d.songs[s.id]; t.title=m.title; t.author=m.author; if(m.art) t.art=m.art; t.ts=Date.now(); }); }); }
+    fetchMeta(vidOf(s)).then(m=>{ if(m.title&&doc.songs[s.id]&&!doc.songs[s.id].title) mutate(d=>{ const t=d.songs[s.id]; t.title=m.title; t.author=m.author; if(m.art) t.art=m.art; t.ts=Date.now(); }); }); }
 }
 
 /* ---------- song sheet ---------- */
@@ -825,13 +829,14 @@ async function connect(repo,token){
   try{
     const r=await fetch(API+'/repos/'+repo,{headers:gh(),cache:'no-store'});
     if(r.status===401){ pair=prev; return 'GitHub did not accept that token. Check you copied all of it.'; }
+    if(ghCode(r)===429){ pair=prev; return 'GitHub is busy right now. Try again in a minute.'; }
     if(r.status===404||r.status===403){ pair=prev; return 'The token cannot see that repo. Check the name, and that the token was made for it.'; }
     if(!r.ok){ pair=prev; return 'GitHub said '+r.status+'. Try again in a minute.'; }
   }catch(e){ pair=prev; return 'Could not reach GitHub. Check the connection.'; }
   const res=await sync();
   if(res!=='ok'){ pair=prev; setNet(prev?netState:'local');
     return res==='denied'?'The token can read but not write. Give it Contents: Read and write.':'Saving failed ('+res+'). Try again.'; }
-  LS.set('jb.pair',pair); warned=false; rememberPair(); return '';
+  LS.set('jb.pair',pair); LS.del('jb.noAuto'); warned=false; rememberPair(); return '';
 }
 function showPairLink(){
   const url=location.origin+location.pathname+'#pair='+C.b64url(JSON.stringify({t:pair.t,r:pair.r,w:other(),at:pair.at||0}));
@@ -841,9 +846,10 @@ function showPairLink(){
     h('div',{class:'warn',text:'This link is a key to the jukebox data. Only send it to '+other()+'. If it ever leaks, delete the token on GitHub and make a new one.'}),
     ta,h('button',{class:'p5btn sm',text:'COPY LINK',onclick:async e=>{ const ok=await copyText(url); e.target.textContent=ok?'COPIED':'SELECT AND COPY'; if(!ok) ta.select(); }}));
 }
-function takePair(v,quiet){
+function takePair(v,quiet,pasted){
   try{ const p=JSON.parse(C.unb64url(v)); if(!p.t||!p.r) throw 0;
-    pair={t:p.t,r:p.r,at:p.at||0}; LS.set('jb.pair',pair); LS.del('jb.noAuto'); warned=false;
+    if(!pasted&&pair&&p.t!==pair.t&&(p.at||0)<(pair.at||0)&&LS.get('jb.dead','')!==pair.t){ if(!quiet) callout('THAT IS AN OLD LINK. KEEPING THE NEWER ONE (OR PASTE IT IN SETTINGS)','info',4200); return false; }
+    pair={t:p.t,r:p.r,at:(pair&&pair.t===p.t)?Math.max(p.at||0,pair.at||0):(p.at||0)}; LS.set('jb.pair',pair); LS.del('jb.noAuto'); warned=false;
     if(p.w&&CONFIG.names.includes(p.w)&&me&&me!==p.w){ // e.g. the owner tapping her link to try it: don't quietly turn his phone into hers
       rememberPair(); if(!quiet) confirmWho(p.w); return true; }
     if(p.w&&CONFIG.names.includes(p.w)){ me=p.w; LS.set('jb.me',me); if(document.querySelector('#modal .whos')){ closeModal(); if(whoResolve) whoResolve(me); } }
@@ -864,7 +870,7 @@ function confirmWho(w){
 function takeSetupText(raw){
   for(let i=0;i<3&&/%[0-9A-F]{2}/i.test(raw);i++){ try{ raw=decodeURIComponent(raw); }catch(e){ break; } } // Messenger wraps and encodes links
   const m=String(raw||'').trim().match(/(?:#|&|^)(?:pair|home)=([A-Za-z0-9_-]+)/)||String(raw||'').trim().match(/^([A-Za-z0-9_-]{40,})$/);
-  return m?takePair(m[1]):(callout('THAT IS NOT A JUKEBOX LINK','bad',3000),false);
+  return m?takePair(m[1],false,true):(callout('THAT IS NOT A JUKEBOX LINK','bad',3000),false);
 }
 function backup(){
   const blob=new Blob([JSON.stringify(doc,null,1)],{type:'application/json'});
@@ -983,7 +989,7 @@ async function dropCoin(raw){
       const others=(ex.drops||[]).some(x=>x.by!==me)||ex.addedBy!==me, mine=(ex.drops||[]).some(x=>x.by===me)||ex.addedBy===me;
       kind=others&&!mine?'both':'again';
       const p=press(art(ex,'hq'),kind,Promise.resolve());
-      mutate(d=>{ const s=d.songs[key]; s.drops=[...(s.drops||[]),{by:me,at:now,start:r.start}]; s.ts=now; });
+      mutate(d=>{ const s=d.songs[key]; s.drops=[...(s.drops||[]),{by:me,at:now,start:r.start}]; s.ts=now; s.liveAt=now; });
       await land(key,await p);
     } else {
       const metaP=fetchMeta(key);
@@ -1130,8 +1136,9 @@ window.__jb={get doc(){ return doc; },set doc(v){ doc=C.merge(C.newDoc(),v); per
   get playing(){ return playing; },get sp(){ return spCtl; },get localGhost(){ return [...localGhost]; },get current(){ return current; },saveNote,shareSong,takePair,showPairLink};
 
 (async function boot(){
-  if(location.hash.slice(0,6)==='#pair='){ takePair(location.hash.slice(6)); afterPair(); }
-  else if(location.hash.slice(0,6)==='#home='){ if(autoWins(location.hash.slice(6))) takePair(location.hash.slice(6)); afterPair(); } // the icon's address: only sets up a copy that isn't yet
+  const hm=location.hash.match(/^#(pair|home)=([A-Za-z0-9_-]+)/);
+  if(hm&&hm[1]==='pair'){ takePair(hm[2]); afterPair(); }
+  else if(hm){ if(autoWins(hm[2])) takePair(hm[2]); afterPair(); } // the icon's address: only sets up a copy that isn't yet
   if(autoWins(cookiePair())) takePair(cookiePair(),true); // a fresh home-screen copy: iOS brought the cookie along
   if(pair) rememberPair();
   if(!me&&location.hash.slice(0,6)==='#play='){ // a song link from one of us is for the other one: skip "who's this?"
