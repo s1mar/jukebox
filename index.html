@@ -646,7 +646,7 @@ function renderGrid(){
   const g=$('#grid'), songs=C.activeSongs(doc);
   $('#count').textContent=songs.length?songs.length+(songs.length===1?' record':' records'):'';
   g.replaceChildren();
-  if(!songs.length){ g.append(h('div',{class:'empty'},h('b',{text:'The jukebox is empty.'}),h('span',{text:'Paste a YouTube link above and drop the first coin.'}))); return; }
+  if(!songs.length){ g.append(h('div',{class:'empty'},h('b',{text:'The jukebox is empty.'}),h('span',{text:'Paste a YouTube or Spotify link above and drop the first coin. It becomes A1.'}))); return; }
   for(const s of songs){
     const d=disp(s), plays=C.totalPlays(doc,s.id), wear=plays>=16?3:plays>=8?2:plays>=3?1:0;
     const fresh=isNewToMe(s), chalk=!fresh&&look[s.id]&&hasNewForMe(s);
