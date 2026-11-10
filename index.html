@@ -358,7 +358,7 @@ const ERR={empty:'PASTE A LINK FIRST',playlist:"THAT'S A PLAYLIST. PICK ONE SONG
   sp_album:"THAT'S AN ALBUM. PICK ONE SONG",sp_playlist:"THAT'S A PLAYLIST. PICK ONE SONG",sp_artist:"THAT'S AN ARTIST. PICK ONE SONG",
   sp_episode:"PODCASTS DON'T FIT IN A JUKEBOX",sp_show:"PODCASTS DON'T FIT IN A JUKEBOX",
   sp_short:"OPEN THAT IN SPOTIFY, THEN SHARE, COPY LINK"};
-const API='https://api.github.com';
+let API='https://api.github.com';
 const BLANK='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 let FAST=false;
 const reduced=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -406,6 +406,7 @@ function when(ts){
 function today(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function callout(text,type,ms){
   ms=ms||2400; const c=h('div',{class:'callout '+(type||'')},text); $('#callouts').append(c);
+  if(window.__jbLog) window.__jbLog.push(text); // test runs read this
   setTimeout(()=>c.classList.add('out'),ms); setTimeout(()=>c.remove(),ms+450);
 }
 function anim(el,kf,o){
@@ -446,6 +447,8 @@ function mutate(fn,delay){
 }
 
 /* ---------- GitHub store: the private repo is the database ---------- */
+// Testing only: on a local dev host the API base can point at a local relay. The live site always uses GitHub.
+if(/(^|\.)localhost$|^127\.0\.0\.1$|^\[::1\]$/.test(location.hostname)){ const o=LS.get('jb.api',null); if(o) API=o; }
 function gh(extra){ return Object.assign({Authorization:'Bearer '+pair.t,Accept:'application/vnd.github+json'},extra||{}); }
 function fileUrl(){ return API+'/repos/'+pair.r+'/contents/'+CONFIG.file; }
 class GHError extends Error{ constructor(s){ super('github '+s); this.status=s; } }
@@ -467,12 +470,18 @@ function ghPut(d,sha){
   if(sha) body.sha=sha;
   return fetch(fileUrl(),{method:'PUT',headers:gh({'Content-Type':'application/json'}),body:JSON.stringify(body)});
 }
-let syncing=false, syncAgain=false, syncTimer=null, warned=false;
+let syncTimer=null, warned=false, syncRun=null, syncNext=null;
 function scheduleSync(ms){ if(!pair) return; clearTimeout(syncTimer); syncTimer=setTimeout(sync,ms); }
-async function sync(){
-  if(!pair) return 'local';
-  if(syncing){ syncAgain=true; return 'busy'; }
-  syncing=true; setNet('syncing'); let result='retry';
+/* One sync at a time. A call made while one runs gets a single follow-up run (shared by every
+   such caller), so whoever asks always gets an answer that includes their latest change. */
+function sync(){
+  if(!pair) return Promise.resolve('local');
+  if(!syncRun){ syncRun=runSync().finally(()=>{ syncRun=null; }); return syncRun; }
+  if(!syncNext) syncNext=syncRun.catch(()=>{}).then(()=>{ syncNext=null; return sync(); });
+  return syncNext;
+}
+async function runSync(){
+  setNet('syncing'); let result='retry';
   try{
     for(let i=0;i<4;i++){
       const remote=await ghGet();
@@ -488,10 +497,10 @@ async function sync(){
     }
   }catch(e){
     result=e.status===401?'expired':(e.status===403||e.status===404)?'denied':'offline';
-  }finally{ syncing=false; }
+  }
   if(result==='ok') lastSync=Date.now();
   setNet(result);
-  if(syncAgain){ syncAgain=false; scheduleSync(300); }
+  if(result==='retry'||result==='offline') scheduleSync(15000); // keep trying quietly
   return result;
 }
 function setNet(s){
@@ -509,19 +518,35 @@ window.onYouTubeIframeAPIReady=function(){
       onReady(){ playerReady=true; if(pending){ const p=pending; pending=null; player.loadVideoById(p); } },
       onStateChange(e){
         if(!current||current.src!=='yt') return;
-        if(e.data===1){ setPlaying(true); countPlay(); }
+        if(e.data===1){ setPlaying(true); countPlay(); localGhost.delete(current.key);
+          const s=doc.songs[current.songId]; if(s&&s.ghost&&vidOf(s)===current.key) mutate(d=>{ d.songs[s.id].ghost=false; d.songs[s.id].ts=Date.now(); }); } // it plays after all
         else if(e.data===3) setPlaying(true); // buffering, or an ad before the song: the needle is down either way
         else if(e.data===2||e.data===0) setPlaying(false);
       },
       onError(e){
         if(!current||current.src!=='yt') return;
         setPlaying(false);
-        if([2,100,101,150].includes(e.data)){ const id=current.songId;
-          mutate(d=>{ const s=d.songs[id]; if(s&&!s.ghost){ s.ghost=true; s.ts=Date.now(); } });
-          callout("THIS ONE WON'T PLAY HERE",'bad',3000); openSheet(id); }
+        onYtError(current.songId,current.key);
       }
     }});
 };
+/* A player error alone is not proof the video is dead: some browsers (in-app ones, odd origins)
+   make YouTube refuse every embed. So the error only shows the fallback on this phone; the record
+   is marked dead for both phones only when YouTube's own lookup says embedding is off or it's gone. */
+const localGhost=new Set(); let envWarned=false;
+function onYtError(songId,key){
+  localGhost.add(key);
+  if(openId===songId) renderSheet(); else if(doc.songs[songId]) openSheet(songId);
+  fetchMeta(key).then(m=>{
+    if(m.ghost||m.gone){
+      mutate(d=>{ const s=d.songs[songId]; if(s&&!s.ghost&&vidOf(s)===key){ s.ghost=true; s.ts=Date.now(); } });
+      callout("THIS ONE WON'T PLAY IN THE JUKEBOX",'bad',3200);
+    } else if(localGhost.size>=2&&!envWarned){ envWarned=true;
+      callout('YOUTUBE WON\'T PLAY INSIDE THIS BROWSER. OPEN THE JUKEBOX IN SAFARI','bad',6000);
+    } else callout("YOUTUBE WON'T PLAY IT HERE. TAP 'OPEN THE ORIGINAL'",'bad',3600);
+  });
+}
+const ghostHere=s=>s&&(s.ghost||localGhost.has(vidOf(s)));
 function loadScript(src){ const s=document.createElement('script'); s.src=src; s.async=true; document.head.append(s); }
 function loadPlayers(){ loadScript('https://www.youtube.com/iframe_api'); loadScript('https://open.spotify.com/embed/iframe-api/v1'); }
 function countPlay(){
@@ -576,12 +601,14 @@ function renderHeader(){
 }
 function renderDeck(){
   const s=current&&doc.songs[current.songId];
-  $('#npPause').disabled=!s; $('#npNotes').disabled=!s;
+  const loose=!s&&current&&current.title; // playing straight from a link, not in this phone's jukebox
+  $('#npPause').disabled=!(s||loose); $('#npNotes').disabled=!s;
   $('#npPause').textContent=playing?'PAUSE':'PLAY';
-  $('#deckRec').classList.toggle('spin',!!s); $('#deckRec').classList.toggle('paused',!playing);
+  $('#deckRec').classList.toggle('spin',!!(s||loose)); $('#deckRec').classList.toggle('paused',!playing);
   $('#arm').classList.toggle('on',playing);
   if(s){ const d=disp(s); $('#npT').textContent=d.song; $('#npA').textContent=(d.artist?d.artist+' · ':'')+C.slotLabel(s.slot);
     const src=art(s); if($('#deckLab').getAttribute('src')!==src) $('#deckLab').src=src; }
+  else if(loose){ $('#npT').textContent=current.title; $('#npA').textContent='from a link'; if(current.art&&$('#deckLab').getAttribute('src')!==current.art) $('#deckLab').src=current.art; }
 }
 function renderSod(){
   const el=$('#sod'); const songs=C.activeSongs(doc);
@@ -602,7 +629,7 @@ function renderGrid(){
   for(const s of songs){
     const d=disp(s), plays=C.totalPlays(doc,s.id), wear=plays>=16?3:plays>=8?2:plays>=3?1:0;
     const fresh=isNewToMe(s), chalk=!fresh&&look[s.id]&&hasNewForMe(s);
-    const cls='strip wear'+wear+(bothPicked(s)?' gold':'')+(s.ghost?' ghost':'')+(incoming.has(s.id)?' incoming':'')+(playing&&current&&current.songId===s.id?' playing':'');
+    const cls='strip wear'+wear+(bothPicked(s)?' gold':'')+(ghostHere(s)?' ghost':'')+(incoming.has(s.id)?' incoming':'')+(playing&&current&&current.songId===s.id?' playing':'');
     g.append(h('button',{class:cls,'data-id':s.id,'aria-label':C.slotLabel(s.slot)+' '+d.song,onclick:()=>openSheet(s.id)},
       h('span',{class:'slot',text:C.slotLabel(s.slot)}),
       h('span',{class:'disc'},h('img',{class:'lab',src:art(s),alt:'',loading:'lazy'})),
@@ -645,11 +672,11 @@ function renderSheet(){
     b.append(h('div',{class:'badge'},'YOU BOTH PICKED THIS',h('small',{text:firsts.join(' · ')})));
   }
   const gb=$('#shGhost'); gb.replaceChildren();
-  if(s.ghost){
+  if(ghostHere(s)){
     const q=encodeURIComponent((d.artist?d.artist+' ':'')+d.song);
     const inp=h('input',{type:'url',placeholder:'Paste another YouTube or Spotify link',autocomplete:'off',autocapitalize:'off'});
     gb.append(h('div',{class:'ghostbox'},
-      h('div',{text:"This record won't play inside the jukebox anymore. The notes are safe."}),
+      h('div',{text:s.ghost?"This record won't play inside the jukebox anymore. The notes are safe.":"YouTube won't play this one inside this browser. The notes are safe, and it may play in Safari."}),
       h('div',{style:'margin-top:8px'},h('a',{href:'https://www.youtube.com/results?search_query='+q,target:'_blank',rel:'noopener',text:'Find it on YouTube'}),' · ',
         h('a',{href:'https://open.spotify.com/search/'+q,target:'_blank',rel:'noopener',text:'on Spotify'}),' · ',
         h('a',{href:openUrl(s.id),target:'_blank',rel:'noopener',text:'open the original'})),
@@ -715,9 +742,11 @@ function modal(...kids){
   if(!opts.locked) m.addEventListener('click',e=>{ if(e.target===m) closeModal(); });
   document.body.append(m); return m;
 }
+let whoResolve=null;
 function askWho(canClose){
   return new Promise(res=>{
-    const pick=n=>{ me=n; LS.set('jb.me',me); closeModal(); render(); res(n); };
+    whoResolve=n=>{ whoResolve=null; render(); res(n); };
+    const pick=n=>{ me=n; LS.set('jb.me',me); closeModal(); whoResolve(n); };
     modal({locked:!canClose},h('div',{class:'mk',html:null},"WHO'S ",h('em',{text:'THIS?'})),
       h('p',{text:'Pick once. This phone remembers.'}),
       h('div',{class:'whos'},...CONFIG.names.map(n=>h('button',{text:n.toUpperCase(),onclick:()=>pick(n)}))));
@@ -783,7 +812,7 @@ function showPairLink(){
 function takePair(v){
   try{ const p=JSON.parse(C.unb64url(v)); if(!p.t||!p.r) throw 0;
     pair={t:p.t,r:p.r}; LS.set('jb.pair',pair); warned=false;
-    if(p.w&&CONFIG.names.includes(p.w)){ me=p.w; LS.set('jb.me',me); }
+    if(p.w&&CONFIG.names.includes(p.w)){ me=p.w; LS.set('jb.me',me); if(document.querySelector('#modal .whos')){ closeModal(); if(whoResolve) whoResolve(me); } }
     callout(me?'HI '+me.toUpperCase()+'!':'PAIRED!','info',2600);
   }catch(e){ callout('THAT PAIRING LINK IS BROKEN','bad',3500); }
 }
@@ -815,11 +844,11 @@ async function fetchMeta(key){
 }
 async function noembed(u){ try{ const r=await fetchT('https://noembed.com/embed?url='+encodeURIComponent(u),6000); return r.ok?await r.json():{}; }catch(e){ return {}; } }
 
-/* the same song added from the other service: same title, and the same artist when both are known */
+/* the same song under another link (other service, or another upload): same title, and the same artist when both are known */
 const norm=t=>String(t||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 function twinOf(s){
   if(!s) return null; const a=disp(s), t=norm(a.song); if(!t||t==='untitled record') return null;
-  return C.activeSongs(doc).find(o=>o.id!==s.id&&isSp(o)!==isSp(s)&&norm(disp(o).song)===t&&(!a.artist||!disp(o).artist||norm(disp(o).artist)===norm(a.artist)))||null;
+  return C.activeSongs(doc).find(o=>o.id!==s.id&&norm(disp(o).song)===t&&(!a.artist||!disp(o).artist||norm(disp(o).artist)===norm(a.artist)))||null;
 }
 let dropping=false;
 async function dropCoin(raw){
@@ -925,7 +954,7 @@ function arrivalPlay(key,from){
     const img=h('img',{class:'arrthumb',src:keyArt(key,'hq'),alt:''}), title=h('p',{text:' '});
     fetchMeta(key).then(m=>{ if(m.art) img.src=m.art; if(m.title) title.textContent=disp({title:m.title,author:m.author}).song; });
     modal(h('div',{class:'mk'},who?who.toUpperCase()+' SENT ':'A SONG ',h('em',{text:who?'A SONG':'FOR YOU'})),img,title,
-      h('button',{class:'p5btn',text:'PLAY IT',onclick:()=>{ closeModal(); clink('coin'); playKey(key,key,0); }}),
+      h('button',{class:'p5btn',text:'PLAY IT',onclick:()=>{ closeModal(); clink('coin'); playKey(key,key,0); current.title=title.textContent.trim(); current.art=img.src; renderDeck(); }}),
       h('button',{class:'link',style:'display:block;margin:12px auto 0',text:'Add it to the jukebox',onclick:()=>{ closeModal(); dropCoin(openUrl(key)); }}));
     return;
   }
@@ -976,10 +1005,14 @@ setInterval(renderHeader,60000);
 /* test hook for scripted checks (hidden panes pause animations) */
 window.__jb={get doc(){ return doc; },set doc(v){ doc=C.merge(C.newDoc(),v); persist(); render(); },get me(){ return me; },get pair(){ return pair; },get net(){ return netState; },
   set fast(v){ FAST=!!v; },dropCoin,openSheet,closeSheet,sync,render,setMe(n){ me=n; LS.set('jb.me',n); render(); },
-  get playing(){ return playing; },get sp(){ return spCtl; },get current(){ return current; },saveNote,shareSong,takePair,showPairLink};
+  get playing(){ return playing; },get sp(){ return spCtl; },get localGhost(){ return [...localGhost]; },get current(){ return current; },saveNote,shareSong,takePair,showPairLink};
 
 (async function boot(){
   if(location.hash.slice(0,6)==='#pair='){ takePair(location.hash.slice(6)); stripHash(); }
+  if(!me&&location.hash.slice(0,6)==='#play='){ // a song link from one of us is for the other one: skip "who's this?"
+    const from=new URLSearchParams(location.hash.slice(1)).get('from');
+    if(CONFIG.names.includes(from)){ me=CONFIG.names.find(n=>n!==from); LS.set('jb.me',me); }
+  }
   render(); loadPlayers();
   await ensureMe(); render(); markSeen();
   if(pair) await Promise.race([sync(),wait(4000)]);
