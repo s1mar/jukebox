@@ -63,6 +63,52 @@ function extractYouTube(input){
   return {error:'nomatch'};
 }
 
+/* ---------- Spotify link -> {id} (tracks only) ---------- */
+const SP_HOSTS=['open.spotify.com','play.spotify.com'];
+const SP_SHORT=['spotify.link','spoti.fi','spotify.app.link'];
+function unwrap(u,depth){
+  let url; try{ url=new URL(u); }catch(e){ try{ url=new URL('https://'+u); }catch(e2){ return null; } }
+  const host=url.hostname.toLowerCase();
+  if(WRAPPERS.includes(host)||WRAPPERS.includes(host.replace(/^www\./,''))){
+    if(depth>=3) return null;
+    const inner=url.searchParams.get('u')||url.searchParams.get('url')||url.searchParams.get('q');
+    return inner?unwrap(decodeFully(inner),depth+1):null;
+  }
+  return url;
+}
+function extractSpotify(input){
+  if(input==null) return {error:'empty'};
+  const s=decodeFully(String(input).trim());
+  if(!s) return {error:'empty'};
+  let m=s.match(/spotify:(track|album|playlist|episode|show|artist):([A-Za-z0-9]{22})(?![A-Za-z0-9])/);
+  if(m) return m[1]==='track'?{id:m[2]}:{error:'sp_'+m[1]};
+  const url=unwrap(firstUrl(s),0);
+  if(url){
+    const host=url.hostname.toLowerCase();
+    if(SP_SHORT.includes(host)) return {error:'sp_short'};
+    if(SP_HOSTS.includes(host)){
+      const parts=url.pathname.split('/').filter(Boolean).filter(p=>!/^intl-[a-z-]+$/i.test(p)&&p!=='embed');
+      if(parts[0]==='track'&&/^[A-Za-z0-9]{22}$/.test(parts[1]||'')) return {id:parts[1]};
+      if(['album','playlist','episode','show','artist'].includes(parts[0])) return {error:'sp_'+parts[0]};
+      return {error:'nomatch'};
+    }
+  }
+  m=s.match(/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:embed\/)?(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]{22})(?![A-Za-z0-9])/i);
+  if(m) return m[1].toLowerCase()==='track'?{id:m[2]}:{error:'sp_'+m[1].toLowerCase()};
+  return {error:'nomatch'};
+}
+/* Any supported link -> {src, key, id, start}. YouTube songs keep the bare video id as
+   their key (older data uses it); Spotify songs use 'sp:<id>' so the two never collide. */
+function extractLink(input){
+  const y=extractYouTube(input);
+  if(y.id) return {src:'yt',key:y.id,id:y.id,start:y.start};
+  const p=extractSpotify(input);
+  if(p.id) return {src:'sp',key:'sp:'+p.id,id:p.id,start:0};
+  if(p.error&&p.error!=='nomatch'&&p.error!=='empty') return {error:p.error};
+  return {error:y.error};
+}
+function keyRef(key){ key=String(key||''); return key.slice(0,3)==='sp:'?{src:'sp',id:key.slice(3)}:{src:'yt',id:key}; }
+
 /* ---------- document + merge ---------- */
 function newDoc(){ return {v:1,songs:{},notes:{},plays:{},seen:{}}; }
 function normalize(d){
@@ -143,5 +189,5 @@ const unb64url=s=>{ s=String(s).replace(/-/g,'+').replace(/_/g,'/'); while(s.len
 
 function uid(){ const a=new Uint8Array(9); (root.crypto||{}).getRandomValues?root.crypto.getRandomValues(a):a.forEach((_,i)=>a[i]=Math.random()*256|0); return Array.from(a,x=>x.toString(36).padStart(2,'0')).join('').slice(0,14); }
 
-root.JBCore={parseTime,extractYouTube,newDoc,normalize,merge,fixSlots,nextSlot,slotLabel,labelToSlot,activeSongs,notesFor,totalPlays,songOfDay,hash32,b64encode,b64decode,b64url,unb64url,uid};
+root.JBCore={parseTime,extractYouTube,extractSpotify,extractLink,keyRef,newDoc,normalize,merge,fixSlots,nextSlot,slotLabel,labelToSlot,activeSongs,notesFor,totalPlays,songOfDay,hash32,b64encode,b64decode,b64url,unb64url,uid};
 })(typeof window!=='undefined'?window:globalThis);
