@@ -525,7 +525,7 @@ window.onYouTubeIframeAPIReady=function(){
 function loadScript(src){ const s=document.createElement('script'); s.src=src; s.async=true; document.head.append(s); }
 function loadPlayers(){ loadScript('https://www.youtube.com/iframe_api'); loadScript('https://open.spotify.com/embed/iframe-api/v1'); }
 function countPlay(){
-  if(!current||current.counted||!me) return; current.counted=true; const id=current.songId;
+  if(!current||current.counted||!me||!doc.songs[current.songId]) return; current.counted=true; const id=current.songId;
   mutate(d=>{ if(!d.plays[id]) d.plays[id]={}; d.plays[id][me]=(d.plays[id][me]||0)+1; },15000);
 }
 
@@ -918,8 +918,18 @@ function arrivalAdd(raw){
 }
 function arrivalPlay(key,from){
   let s=doc.songs[key]; if(!s){ const n=C.labelToSlot(key); s=C.activeSongs(doc).find(x=>x.slot===n); }
-  if(!s||s.deleted){ callout("THAT RECORD ISN'T HERE YET",'bad',3000); return; }
-  const d=disp(s), who=from&&from!==me?from:'';
+  const who=from&&from!==me?from:'';
+  if(!s||s.deleted){ // not on this phone (not paired yet, or a fresh in-app browser): play it straight from the link
+    const k=C.keyRef(key);
+    if(!(k.src==='yt'?/^[A-Za-z0-9_-]{11}$/:/^[A-Za-z0-9]{22}$/).test(k.id)){ callout("THAT LINK IS BROKEN",'bad',3000); return; }
+    const img=h('img',{class:'arrthumb',src:keyArt(key,'hq'),alt:''}), title=h('p',{text:' '});
+    fetchMeta(key).then(m=>{ if(m.art) img.src=m.art; if(m.title) title.textContent=disp({title:m.title,author:m.author}).song; });
+    modal(h('div',{class:'mk'},who?who.toUpperCase()+' SENT ':'A SONG ',h('em',{text:who?'A SONG':'FOR YOU'})),img,title,
+      h('button',{class:'p5btn',text:'PLAY IT',onclick:()=>{ closeModal(); clink('coin'); playKey(key,key,0); }}),
+      h('button',{class:'link',style:'display:block;margin:12px auto 0',text:'Add it to the jukebox',onclick:()=>{ closeModal(); dropCoin(openUrl(key)); }}));
+    return;
+  }
+  const d=disp(s);
   modal(h('div',{class:'mk'},who?who.toUpperCase()+' PUT ON ':'PUT ON ',h('em',{text:C.slotLabel(s.slot)})),
     h('img',{class:'arrthumb',src:art(s,'hq'),alt:''}),h('p',{text:d.song+(d.artist?' · '+d.artist:'')}),
     h('button',{class:'p5btn',text:'PLAY IT',onclick:()=>{ closeModal(); clink('coin'); playSong(s); openSheet(s.id); }}));
