@@ -144,6 +144,10 @@ header{display:flex;align-items:center;gap:8px;height:40px;margin-bottom:6px}
 .rack{margin-top:20px}
 .rack-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .count{font-family:var(--type);font-size:13px;color:#f0d0aa}
+.newpill{position:absolute;left:50%;top:calc(62px + env(safe-area-inset-top));z-index:19;font-family:var(--punch);font-size:15px;letter-spacing:.08em;background:var(--p5);color:#fff;border:2px solid #000;padding:8px 16px;transform:translateX(-50%) rotate(-3deg) skewX(-8deg);box-shadow:3px 3px 0 #000;cursor:pointer;touch-action:manipulation;white-space:nowrap} /* under the scrim, sheet and modals, so they cover it */
+.newpill[hidden]{display:none}
+.strip.flash{animation:flash 1.2s ease-out}
+@keyframes flash{0%,40%{outline:3px solid var(--gold);outline-offset:2px}100%{outline:3px solid transparent;outline-offset:6px}}
 .grid{display:flex;flex-direction:column;gap:8px}
 .strip{position:relative;display:grid;grid-template-columns:44px 52px 1fr;align-items:center;gap:10px;min-height:66px;padding:8px 12px 8px 8px;text-align:left;color:#1a1a1a;
   background:linear-gradient(180deg,transparent 0 5px,var(--cherry) 5px 7px,transparent 7px calc(100% - 7px),var(--cherry) calc(100% - 7px) calc(100% - 5px),transparent calc(100% - 5px)),var(--paper);
@@ -674,7 +678,17 @@ function renderGrid(){
       fresh?h('span',{class:'sticker',text:'NEW'}):null,
       chalk?h('span',{class:'chalk',text:'new note'}):null));
   }
+  renderNewPill(songs);
   retitle(songs);
+}
+function renderNewPill(songs){ // one cue at the top: how many records and notes are new for me; a tap jumps to the first
+  const pill=$('#newPill'); if(!pill) return;
+  const fresh=songs.filter(isNewToMe), noted=songs.filter(x=>!isNewToMe(x)&&look[x.id]&&hasNewForMe(x));
+  const parts=[]; if(fresh.length) parts.push(fresh.length+(fresh.length===1?' NEW RECORD':' NEW RECORDS')); if(noted.length) parts.push(noted.length+(noted.length===1?' NEW NOTE':' NEW NOTES'));
+  pill.hidden=!parts.length; pill.textContent=parts.join(' + ')+'  \u2193';
+  const first=[...fresh,...noted].sort((a,b)=>a.slot-b.slot)[0];
+  pill.onclick=()=>{ if(!first) return; const card=document.querySelector('.strip[data-id="'+first.id+'"]'); if(!card) return;
+    card.scrollIntoView({behavior:reduced?'auto':'smooth',block:'center'}); card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); };
 }
 const retried=new Set();
 function retitle(songs){ // songs saved while offline get their titles later
@@ -1164,5 +1178,6 @@ window.__jb={get doc(){ return doc; },set doc(v){ doc=C.merge(C.newDoc(),v); per
   handleHash();
 })();
 </script>
+<button class="newpill" id="newPill" hidden></button>
 </body>
 </html>
