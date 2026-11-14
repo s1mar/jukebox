@@ -112,10 +112,10 @@ function extractLink(input){
 function keyRef(key){ key=String(key||''); return key.slice(0,3)==='sp:'?{src:'sp',id:key.slice(3)}:{src:'yt',id:key}; }
 
 /* ---------- document + merge ---------- */
-function newDoc(){ return {v:1,songs:{},notes:{},plays:{},seen:{}}; }
+function newDoc(){ return {v:1,songs:{},notes:{},plays:{},seen:{},last:null}; }
 function normalize(d){
   d=d&&typeof d==='object'?d:{};
-  return {v:1,songs:d.songs||{},notes:d.notes||{},plays:d.plays||{},seen:d.seen||{}};
+  return {v:1,songs:d.songs||{},notes:d.notes||{},plays:d.plays||{},seen:d.seen||{},last:d.last&&d.last.id?d.last:null};
 }
 function newer(a,b){ if(!a) return b; if(!b) return a; return (b.ts||0)>(a.ts||0)?b:a; }
 /* taking a record out and putting it back are timed facts of their own: the later one wins,
@@ -146,6 +146,7 @@ function merge(a,b){
     out.plays[id]=o;
   }
   for(const u of new Set([...Object.keys(a.seen),...Object.keys(b.seen)])) out.seen[u]=Math.max(a.seen[u]||0,b.seen[u]||0);
+  out.last=(a.last&&b.last)?((b.last.at||0)>(a.last.at||0)?b.last:a.last):(a.last||b.last); // the record left on the deck: the latest play wins
   fixSlots(out);
   return out;
 }

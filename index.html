@@ -307,7 +307,7 @@ ol.steps b{color:#fff}
         <div class="arm" id="arm"></div>
       </div>
       <div class="np">
-        <div class="np-k">NOW PLAYING</div>
+        <div class="np-k" id="npK">NOW PLAYING</div>
         <div class="np-t" id="npT">Nothing yet</div>
         <div class="np-a" id="npA">The needle is waiting</div>
         <div class="np-btns"><button class="chip" id="npPause" disabled>PAUSE</button><button class="chip" id="npNotes" disabled>NOTES</button></div>
@@ -590,7 +590,7 @@ function loadScript(src){ const s=document.createElement('script'); s.src=src; s
 function loadPlayers(){ loadScript('https://www.youtube.com/iframe_api'); loadScript('https://open.spotify.com/embed/iframe-api/v1'); }
 function countPlay(){
   if(!current||current.counted||!me||!doc.songs[current.songId]) return; current.counted=true; const id=current.songId;
-  mutate(d=>{ if(!d.plays[id]) d.plays[id]={}; d.plays[id][me]=(d.plays[id][me]||0)+1; },15000);
+  mutate(d=>{ if(!d.plays[id]) d.plays[id]={}; d.plays[id][me]=(d.plays[id][me]||0)+1; d.last={id,by:me,at:Date.now()}; },15000);
 }
 
 /* ---------- Spotify player (its embed; a full song needs a Spotify login in that browser, else a 30 s preview) ---------- */
@@ -640,10 +640,16 @@ function renderHeader(){
   const o=other(), t=doc.seen[o]||0, mins=Math.floor((Date.now()-t)/60000);
   if(me&&t&&mins<60) p.append(h('span',{class:'cup'},h('i'),h('i')),h('span',{text:o+(mins<7?' is here':' was here '+mins+' min ago')}));
 }
+function agoText(t){ const m=Math.max(0,Math.floor((Date.now()-t)/60000)); if(m<1) return 'just now'; if(m<60) return m+' min ago'; const hr=Math.floor(m/60); if(hr<24) return hr+'h ago'; const dy=Math.floor(hr/24); return dy===1?'yesterday':dy+' days ago'; }
+const lastOnDeck=()=>{ const l=doc.last, s=l&&doc.songs[l.id]; return s&&!s.deleted?s:null; };
 function renderDeck(){
   const s=current&&doc.songs[current.songId];
   const loose=!s&&current&&current.title; // playing straight from a link, not in this phone's jukebox
-  $('#npPause').disabled=!(s||loose); $('#npNotes').disabled=!s;
+  const ls=!s&&!loose?lastOnDeck():null; // nothing on: the last record stays on the deck, like a real one
+  $('#npPause').disabled=!(s||loose||ls); $('#npNotes').disabled=!(s||ls);
+  $('#npK').textContent=ls?'LAST PLAYED':'NOW PLAYING';
+  if(ls){ const d=disp(ls); $('#npT').textContent=d.song; $('#npA').textContent=C.slotLabel(ls.slot)+' · '+(doc.last.by===me?'you':doc.last.by)+', '+agoText(doc.last.at);
+    const src=art(ls); if($('#deckLab').getAttribute('src')!==src) $('#deckLab').src=src; }
   $('#npPause').textContent=playing?'PAUSE':'PLAY';
   $('#deckRec').classList.toggle('spin',!!(s||loose)); $('#deckRec').classList.toggle('paused',!playing);
   $('#arm').classList.toggle('on',playing);
@@ -1124,7 +1130,7 @@ $('#dropBtn').onclick=()=>dropCoin($('#link').value);
 $('#link').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); dropCoin($('#link').value); } });
 $('#pasteBtn').onclick=async()=>{ try{ const t=await navigator.clipboard.readText(); if(t){ $('#link').value=t.trim(); return; } }catch(e){} $('#link').focus(); callout('LONG-PRESS THE BOX TO PASTE','info'); };
 $('#npPause').onclick=()=>{
-  if(!current) return;
+  if(!current){ const ls=lastOnDeck(); if(ls) playSong(ls); return; } // put the needle back on the record left on the deck, inside the tap
   if(current.src==='sp'){ if(!spCtl) return; if(playing){ spPause(); setPlaying(false); } else Promise.resolve(spCtl.resume()).catch(()=>{}); return; }
   if(!playerReady) return; if(playing) player.pauseVideo(); else player.playVideo();
 };
@@ -1132,7 +1138,7 @@ $('#shEditBtn').onclick=()=>{ const s=doc.songs[openId]; if(!s) return; const bo
   if(!box.hidden){ box.hidden=true; return; } $('#shEdT').value=d.song==='Untitled record'?'':d.song; $('#shEdA').value=d.artist; box.hidden=false; $('#shEdA').focus(); };
 $('#shEdSave').onclick=()=>{ const id=openId; if(!id) return; const t=$('#shEdT').value.trim(), a=$('#shEdA').value.trim();
   mutate(d=>{ const s=d.songs[id]; if(t) s.title=t; s.author=a; s.fixed=true; s.ts=Date.now(); }); $('#shEdit').hidden=true; callout('FIXED','info',1200); };
-$('#npNotes').onclick=()=>{ if(current) openSheet(current.songId); };
+$('#npNotes').onclick=()=>{ if(current) openSheet(current.songId); else { const ls=lastOnDeck(); if(ls) openSheet(ls.id); } };
 $('#gear').onclick=openSettings;
 $('#homeGo').onclick=homeGuide;
 $('#homeNo').onclick=()=>{ LS.set('jb.homeNo',true); renderHint(); callout('IT LIVES IN SETTINGS IF YOU WANT IT','info',2600); };
