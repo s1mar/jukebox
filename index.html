@@ -817,8 +817,9 @@ function ensureMe(){ return me?Promise.resolve(me):askWho(false); }
 function openSettings(){
   const kids=[h('div',{class:'mk',text:'SETTINGS'}),
     h('div',{class:'row'},h('span',{text:'This phone belongs to'}),h('b',{text:me||'nobody yet'}),h('button',{class:'link',text:'switch',onclick:()=>askWho(true)})),
-    h('div',{class:'row'},h('span',{text:'Hide my visits'}),h('b',{id:'hidState',text:hidden()?'ON':'OFF'}),h('button',{class:'link',id:'hidBtn',text:hidden()?'turn off':'turn on',onclick:()=>{ LS.set('jb.hidden',!hidden()); closeModal(); openSettings(); renderHeader(); }})),
-    h('p',{class:'small',text:'When on, '+(other()||'the other phone')+' does not see when you are here. Your plays still show as the last record on the deck.'})];
+    ];
+  if(me===CONFIG.names[0]) kids.push( // only on the owner's phone
+    h('div',{class:'row'},h('span',{text:'hmv'}),h('b',{id:'hidState',text:hidden()?'ON':'OFF'}),h('button',{class:'link',id:'hidBtn',text:hidden()?'turn off':'turn on',onclick:()=>{ LS.set('jb.hidden',!hidden()); closeModal(); openSettings(); renderHeader(); }})));
   if(pair){
     kids.push(h('p',{class:'small',text:'Shared through the private repo '+pair.r+'. '+(lastSync?'Last saved '+new Date(lastSync).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+'.':'')}));
     if(me===CONFIG.names[0]) kids.push(h('button',{class:'p5btn sm',text:'MAKE '+other().toUpperCase()+"'S LINK",onclick:showPairLink}));
