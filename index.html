@@ -656,6 +656,7 @@ function renderDeck(){
   if(s){ const d=disp(s); $('#npT').textContent=d.song; $('#npA').textContent=(d.artist?d.artist+' · ':'')+C.slotLabel(s.slot);
     const src=art(s); if($('#deckLab').getAttribute('src')!==src) $('#deckLab').src=src; }
   else if(loose){ $('#npT').textContent=current.title; $('#npA').textContent='from a link'; if(current.art&&$('#deckLab').getAttribute('src')!==current.art) $('#deckLab').src=current.art; }
+  else if(!ls){ $('#npT').textContent='Nothing yet'; $('#npA').textContent='The needle is waiting'; $('#deckLab').src=BLANK; } // the record on the deck was removed: an empty deck again
 }
 function renderSod(){
   const el=$('#sod'); const songs=C.activeSongs(doc);
@@ -1126,7 +1127,7 @@ function arrivalPlay(key,from){
 }
 
 /* ---------- presence: a light "I was here" so the other one sees a coffee cup ---------- */
-function hidden(){ return !!LS.get('jb.hidden',false); } // this phone's visits stay private: no "is here" (its plays still land on the deck)
+function hidden(){ return me===CONFIG.names[0]&&!!LS.get('jb.hidden',false); } // the owner's visits stay private (his plays still land on the deck); never applies to anyone else on this phone
 function markSeen(){ if(!me||hidden()) return; const t=doc.seen[me]||0; if(Date.now()-t>5*60000) mutate(d=>{ d.seen[me]=Date.now(); },4000); }
 
 /* ---------- wiring ---------- */

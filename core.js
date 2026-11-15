@@ -113,9 +113,10 @@ function keyRef(key){ key=String(key||''); return key.slice(0,3)==='sp:'?{src:'s
 
 /* ---------- document + merge ---------- */
 function newDoc(){ return {v:1,songs:{},notes:{},plays:{},seen:{},last:null}; }
+const validLast=l=>!!l&&typeof l==='object'&&typeof l.id==='string'&&!!l.id&&typeof l.by==='string'&&typeof l.at==='number'&&isFinite(l.at)&&l.at>0;
 function normalize(d){
   d=d&&typeof d==='object'?d:{};
-  return {v:1,songs:d.songs||{},notes:d.notes||{},plays:d.plays||{},seen:d.seen||{},last:d.last&&d.last.id?d.last:null};
+  return {v:1,songs:d.songs||{},notes:d.notes||{},plays:d.plays||{},seen:d.seen||{},last:validLast(d.last)?d.last:null};
 }
 function newer(a,b){ if(!a) return b; if(!b) return a; return (b.ts||0)>(a.ts||0)?b:a; }
 /* taking a record out and putting it back are timed facts of their own: the later one wins,
