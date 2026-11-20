@@ -223,6 +223,19 @@ header{display:flex;align-items:center;gap:8px;height:40px;margin-bottom:6px}
 .compose textarea:focus{outline:none;border-color:var(--mint)}
 .save{display:block;margin:10px 0 0 auto;font-family:var(--punch);letter-spacing:.06em;font-size:16px;padding:9px 16px;background:var(--cherry);color:#fff;transform:skewX(-10deg);box-shadow:3px 3px 0 #000}
 .save:disabled{opacity:.4}
+.cmp{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
+.cmp textarea{margin-top:0;flex:1;min-width:0}
+.pic{flex:none;width:48px;height:48px;border-radius:10px;background:var(--mint);color:#000;font-size:24px;line-height:44px;text-align:center;border:2px solid #000;box-shadow:2px 2px 0 #000}
+.pic:disabled{opacity:.4}
+.prev{display:flex;align-items:center;gap:10px;margin-top:8px;font-family:var(--punch);letter-spacing:.06em;font-size:14px;color:var(--mint)}
+.prev img{height:72px;max-width:45%;object-fit:cover;border-radius:6px;border:2px solid #fff}
+.prev button{margin-left:auto;width:34px;height:34px;border-radius:50%;background:#000;font-size:22px;line-height:34px;box-shadow:0 0 0 2px #333}
+.npic{margin:8px 0 2px;border-radius:2px;overflow:hidden;background:rgba(0,0,0,.07);display:grid;place-items:center;font-family:system-ui,sans-serif;font-size:13px;color:#7a5a48;text-align:center}
+.npic img{display:block;width:100%;height:100%;object-fit:contain;cursor:zoom-in}
+.npic button{font-size:13px;color:#7a5a48;text-decoration:underline;padding:10px}
+#viewer{position:fixed;inset:0;z-index:55;background:#000;touch-action:pan-x pan-y pinch-zoom}
+#viewer img{display:block;width:100vw;height:100vh;height:100dvh;object-fit:contain}
+#viewer .x{top:calc(12px + env(safe-area-inset-top));z-index:1}
 .remove{display:block;margin:26px auto 4px;font-size:13px;color:#b8968a;text-decoration:underline}
 .remove.arm2{color:#fff;background:var(--p5);text-decoration:none;padding:6px 12px}
 
@@ -363,7 +376,9 @@ ol.steps b{color:#fff}
   <div id="shNotes"></div>
   <div class="compose">
     <button class="prompt" id="shPrompt"><span id="shPromptT"></span><em aria-label="another prompt">&#8635;</em></button>
-    <textarea id="shText" maxlength="1000" placeholder="A thought, a feeling, a memory. Or nothing at all."></textarea>
+    <div class="cmp"><textarea id="shText" maxlength="1000" placeholder="A thought, a feeling, a memory. Or nothing at all."></textarea><button class="pic" id="shPic" type="button" aria-label="Add a picture" title="Add a picture">&#128247;</button></div>
+    <input type="file" id="shFile" accept="image/*" hidden>
+    <div class="prev" id="shPrev" hidden></div>
     <button class="save" id="shSave" disabled>PIN IT TO THE RECORD</button>
   </div>
   <button class="remove" id="shRemove">Take this record out</button>
@@ -703,12 +718,108 @@ function retitle(songs){ // songs saved while offline get their titles later
     fetchMeta(vidOf(s)).then(m=>{ if(m.title&&doc.songs[s.id]&&!doc.songs[s.id].title) mutate(d=>{ const t=d.songs[s.id]; t.title=m.title; t.author=m.author; if(m.art) t.art=m.art; t.ts=Date.now(); }); }); }
 }
 
+/* ---------- pictures in notes: each is its own file in the data repo, images/<noteId>.jpg ---------- */
+// The note only points at the file (note.img = {path,w,h,bytes}); the bytes never go into jukebox.json.
+// Errors here never touch setNet: one missing picture must not mark a working key dead.
+const PICTXT='(a picture)', IMG_MAX=1536*1024;
+let pic=null, sending=false, IMG_TMO=60000; // pic = {songId,blob,w,h,url}: the picked photo, in memory only
+class PicError extends Error{}
+const picHere=()=>pic&&pic.songId===openId?pic:null;
+function fixSave(){ $('#shSave').disabled=sending||!($('#shText').value.trim()||picHere()); $('#shPic').disabled=sending; }
+function renderPrev(){
+  const b=$('#shPrev'), p=picHere(); b.replaceChildren(); b.hidden=!p;
+  if(p) b.append(h('img',{src:p.url,alt:'the picture you picked'}),h('span',{text:sending?'SENDING...':'PICTURE READY'}),sending?null:h('button',{type:'button',text:'\u00d7','aria-label':'Drop the picture',onclick:dropPic}));
+  fixSave();
+}
+function dropPic(){ if(sending) return; if(pic) URL.revokeObjectURL(pic.url); pic=null; renderPrev(); }
+async function decodePic(file){
+  try{ if(window.createImageBitmap){ const b=await createImageBitmap(file,{imageOrientation:'from-image'}); if(b.width&&b.height) return {src:b,w:b.width,h:b.height,done:()=>{ try{ b.close(); }catch(e){} }}; } }catch(e){}
+  const u=URL.createObjectURL(file); // some browsers refuse the options or the format: an <img> decodes it (and honours the rotation tag)
+  try{ const im=new Image(); im.src=u; await im.decode(); if(!im.naturalWidth||!im.naturalHeight) throw new Error('empty'); return {src:im,w:im.naturalWidth,h:im.naturalHeight,done:()=>URL.revokeObjectURL(u)}; }
+  catch(e){ URL.revokeObjectURL(u); throw e; }
+}
+async function shrinkPic(file){ // width at most 1600 (a poem must stay readable), height at most 4096, white under transparency, JPEG at most 1.5 MB
+  if(file.size>25*1024*1024) throw new PicError('big');
+  const d=await decodePic(file);
+  try{
+    let out=null;
+    for(const [mw,q] of [[1600,.85],[1280,.85],[1280,.75],[1000,.7]]){
+      const k=Math.min(1,mw/d.w,4096/d.h), w=Math.max(1,Math.round(d.w*k)), hh=Math.max(1,Math.round(d.h*k));
+      const c=document.createElement('canvas'); c.width=w; c.height=hh; const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,w,hh); x.drawImage(d.src,0,0,w,hh);
+      const b=await new Promise(r=>c.toBlob(r,'image/jpeg',q)); c.width=c.height=0;
+      if(!b) continue; // toBlob can hand back nothing: try the next step
+      out={blob:new Blob([b],{type:'image/jpeg'}),w,h:hh}; if(b.size<=IMG_MAX) break;
+    }
+    if(!out||out.blob.size>4*1024*1024) throw new PicError('read');
+    return out;
+  }finally{ d.done(); }
+}
+async function pickPic(file){
+  const songId=openId; if(!file||!songId) return;
+  try{ const r=await shrinkPic(file); if(pic) URL.revokeObjectURL(pic.url); pic={songId,blob:r.blob,w:r.w,h:r.h,url:URL.createObjectURL(r.blob)}; renderPrev(); }
+  catch(e){ callout(e.message==='big'?'THAT PICTURE IS TOO BIG. TRY A SMALLER ONE':"COULDN'T READ THAT PICTURE",'bad',3200); }
+}
+const blobB64=b=>new Promise((ok,no)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(',')[1]||''); r.onerror=()=>no(r.error); r.readAsDataURL(b); }); // raw bytes: C.b64encode is for text and would corrupt a JPEG
+const imgApi=p=>API+'/repos/'+pair.r+'/contents/'+p;
+async function putPic(blob){ // upload first; the note is only made once GitHub says 201, so a note never points at a missing file
+  if(!pair) throw new PicError('local');
+  const b64=await blobB64(blob); let id=C.uid(), last=null;
+  for(let i=0;i<4;i++){
+    while(syncRun) await syncRun.catch(()=>{}); // one write to the repo at a time on this phone
+    const ac=new AbortController(), tm=setTimeout(()=>ac.abort(),IMG_TMO); let r;
+    try{ r=await fetch(imgApi('images/'+id+'.jpg'),{method:'PUT',headers:gh({'Content-Type':'application/json'}),signal:ac.signal,cache:'no-store',
+      body:JSON.stringify({message:'jukebox: '+(me||'someone')+' picture '+new Date().toISOString(),content:b64})}); }
+    catch(e){ last=e; id=C.uid(); await wait(300+Math.random()*500); continue; } // timed out or dropped: it may have landed, so retry under a new name (a stray file is harmless)
+    finally{ clearTimeout(tm); }
+    if(r.status===201||r.status===200) return {id,path:'images/'+id+'.jpg'};
+    if(r.status===409||r.status===422){ if(r.status===422) id=C.uid(); await wait(250+Math.random()*500); continue; } // someone wrote first / the name was taken
+    throw new PicError('http '+r.status);
+  }
+  throw last||new PicError('busy');
+}
+const picUrls=new Map(), picWait=new Map(), picKey=p=>location.origin+'/__jbpic/'+p;
+function picBlobUrl(path){ // header-only fetch of the private file into a blob URL (the token never goes in a URL); Cache Storage is a bonus, not a need
+  if(!/^images\/[\w-]+\.jpg$/.test(path)) return Promise.reject(new Error('path'));
+  if(picUrls.has(path)) return Promise.resolve(picUrls.get(path));
+  if(!picWait.has(path)) picWait.set(path,(async()=>{
+    let blob=null, cs=null;
+    try{ if(window.caches){ cs=await caches.open('jb-pics'); const m=await cs.match(picKey(path)); if(m){ const buf=await m.arrayBuffer(); if(buf.byteLength) blob=new Blob([buf],{type:'image/jpeg'}); } } }catch(e){ cs=null; }
+    if(!blob){
+      if(!pair) throw new Error('local');
+      for(let i=0;i<3&&!blob;i++){ // a 404 right after an upload is retried, never kept
+        if(i) await wait(700*i);
+        const ac=new AbortController(), tm=setTimeout(()=>ac.abort(),IMG_TMO);
+        try{ const r=await fetch(imgApi(path),{headers:gh({Accept:'application/vnd.github.raw'}),cache:'no-store',signal:ac.signal}); if(r.ok){ const buf=await r.arrayBuffer(); if(buf.byteLength) blob=new Blob([buf],{type:'image/jpeg'}); } }catch(e){}
+        finally{ clearTimeout(tm); }
+      }
+      if(!blob) throw new Error('missing');
+      try{ if(cs) cs.put(picKey(path),new Response(blob,{headers:{'Content-Type':'image/jpeg'}})).catch(()=>{}); }catch(e){}
+    }
+    const u=URL.createObjectURL(blob); picUrls.set(path,u); return u;
+  })().finally(()=>picWait.delete(path)));
+  return picWait.get(path);
+}
+function picEl(n){
+  const m=n.img, ok=m&&m.w>0&&m.h>0&&isFinite(m.w)&&isFinite(m.h);
+  const box=h('div',{class:'npic',style:'aspect-ratio:'+(ok?m.w+'/'+m.h:'4/3')}); // sized before it loads, so the sheet does not jump
+  const load=()=>{ box.replaceChildren('loading the picture...'); picBlobUrl(m.path).then(u=>box.replaceChildren(h('img',{src:u,alt:'a picture from '+n.by,onclick:()=>openViewer(u)})),
+    ()=>box.replaceChildren(h('button',{type:'button',text:"picture didn't load, tap to retry",onclick:load}))); };
+  load(); return box;
+}
+function openViewer(u){
+  closeViewer();
+  const v=h('div',{id:'viewer',role:'dialog','aria-label':'Picture'},h('img',{src:u,alt:'picture'}),h('button',{class:'x',type:'button',text:'\u00d7','aria-label':'Close',onclick:closeViewer}));
+  v.addEventListener('click',e=>{ if(e.target===v) closeViewer(); }); document.body.append(v);
+}
+function closeViewer(){ const v=$('#viewer'); if(v) v.remove(); }
+window.addEventListener('beforeunload',e=>{ if(sending){ e.preventDefault(); e.returnValue=''; } }); // a picture is still going up
+
 /* ---------- song sheet ---------- */
 let promptIx=Math.floor(Math.random()*PROMPTS.length), armed=null;
 function openSheet(id){
   if(!doc.songs[id]) return;
   openId=id; look[id]=Date.now(); LS.set('jb.look',look); $('#shEdit').hidden=true;
-  $('#shText').value=LS.get('jb.draft.'+id,''); $('#shSave').disabled=!$('#shText').value.trim();
+  $('#shText').value=LS.get('jb.draft.'+id,''); renderPrev();
   renderSheet(); $('#sheet').scrollTop=0;
   $('#sheet').inert=false; $('#sheet').classList.add('on'); $('#scrim').classList.add('on'); document.body.style.overflow='hidden';
   fitSheet(); renderGrid();
@@ -754,7 +865,7 @@ function renderSheet(){
   if(!ns.length) list.append(h('div',{class:'nonote',text:'No notes yet. What does this one bring back?'}));
   for(const n of ns){
     const del=n.by===me?h('button',{class:'nx',text:armed==='n:'+n.id?'tap again to delete':'delete',onclick:()=>{ if(armed==='n:'+n.id){ if(tooSoon()) return; disarm(); mutate(x=>{ x.notes[n.id]=Object.assign({},x.notes[n.id],{deleted:true,ts:Date.now()}); }); } else arm('n:'+n.id); }}):null;
-    list.append(h('div',{class:'note'+(n.by===me?' mine':'')},h('div',{class:'nb'},h('span',{class:'by',text:n.by}),h('span',{text:when(n.at)}),del),h('p',{text:n.text})));
+    list.append(h('div',{class:'note'+(n.by===me?' mine':'')},h('div',{class:'nb'},h('span',{class:'by',text:n.by}),h('span',{text:when(n.at)}),del),n.img&&n.text===PICTXT?null:h('p',{text:n.text}),n.img?picEl(n):null));
   }
   $('#shPromptT').textContent=PROMPTS[promptIx%PROMPTS.length];
   $('#shRemove').textContent=armed==='rm'?'Tap again to take it out':'Take this record out';
@@ -764,12 +875,27 @@ let armTimer=null;
 let armedAt=0; const tooSoon=()=>Date.now()-armedAt<450;
 function arm(k){ armed=k; armedAt=Date.now(); clearTimeout(armTimer); armTimer=setTimeout(()=>{ armed=null; if(openId) renderSheet(); },3500); renderSheet(); }
 function disarm(){ armed=null; clearTimeout(armTimer); }
-function saveNote(){
-  const t=$('#shText').value.trim(); if(!t||!openId||!me) return;
-  const now=Date.now(), id=C.uid(), songId=openId;
-  mutate(d=>{ d.notes[id]={id,songId,by:me,text:t.slice(0,1000),at:now,ts:now}; });
-  $('#shText').value=''; $('#shSave').disabled=true; LS.del('jb.draft.'+songId); promptIx++; renderSheet();
-  callout('PINNED','info',1300);
+async function saveNote(){
+  if(sending) return;
+  const ta=$('#shText'), t=ta.value.trim(), p=picHere(), songId=openId, by=me; // taken now: the sheet can change while a picture goes up
+  if((!t&&!p)||!songId||!by) return;
+  if(!p){
+    const now=Date.now(), id=C.uid();
+    mutate(d=>{ d.notes[id]={id,songId,by,text:t.slice(0,1000),at:now,ts:now}; });
+    ta.value=''; fixSave(); LS.del('jb.draft.'+songId); promptIx++; renderSheet();
+    callout('PINNED','info',1300); return;
+  }
+  sending=true; renderPrev();
+  try{
+    let up; try{ up=await putPic(p.blob); }
+    catch(e){ callout(e.message==='local'?'CONNECT THE JUKEBOX FIRST. PICTURES NEED IT':"COULDN'T SEND THE PICTURE, TRY AGAIN",'bad',3200); return; } // draft and picture stay
+    const now=Date.now(), img={path:up.path,w:p.w,h:p.h,bytes:p.blob.size};
+    mutate(d=>{ d.notes[up.id]={id:up.id,songId,by,text:(t||PICTXT).slice(0,1000),at:now,ts:now,img}; });
+    if(pic===p){ URL.revokeObjectURL(p.url); pic=null; }
+    if(LS.get('jb.draft.'+songId,'').trim()===t) LS.del('jb.draft.'+songId);
+    if(openId===songId&&ta.value.trim()===t) ta.value='';
+    promptIx++; callout('PINNED','info',1300);
+  }finally{ sending=false; renderPrev(); if(openId) renderSheet(); }
 }
 function fitSheet(){
   const vv=window.visualViewport, sh=$('#sheet'); if(!vv) return;
@@ -1151,15 +1277,17 @@ $('#scrim').onclick=closeSheet; $('#shClose').onclick=closeSheet;
 $('#shPlay').onclick=()=>{ const s=doc.songs[openId]; if(s){ clink('coin'); playSong(s); renderSheet(); } };
 $('#shShare').onclick=()=>shareSong(openId);
 $('#shSave').onclick=saveNote;
-$('#shText').addEventListener('input',e=>{ $('#shSave').disabled=!e.target.value.trim(); if(openId) LS.set('jb.draft.'+openId,e.target.value); });
+$('#shPic').onclick=()=>{ if(!pair){ callout('CONNECT THE JUKEBOX FIRST. PICTURES NEED IT','bad',3200); return; } $('#shFile').click(); };
+$('#shFile').addEventListener('change',e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=''; pickPic(f); });
+$('#shText').addEventListener('input',e=>{ fixSave(); if(openId) LS.set('jb.draft.'+openId,e.target.value); });
 $('#shText').addEventListener('focus',()=>setTimeout(()=>{ fitSheet(); $('#shSave').scrollIntoView({block:'nearest'}); },350));
 $('#shPrompt').onclick=e=>{
   const ta=$('#shText');
   if(e.target.tagName==='EM'||ta.value.trim()){ promptIx++; $('#shPromptT').textContent=PROMPTS[promptIx%PROMPTS.length]; return; }
-  ta.value=PROMPTS[promptIx%PROMPTS.length].replace(/\.\.\.$/,' '); if(openId) LS.set('jb.draft.'+openId,ta.value); ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); $('#shSave').disabled=false;
+  ta.value=PROMPTS[promptIx%PROMPTS.length].replace(/\.\.\.$/,' '); if(openId) LS.set('jb.draft.'+openId,ta.value); ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); fixSave();
 };
 $('#shRemove').onclick=()=>{ if(!openId) return; if(armed!=='rm'){ arm('rm'); return; } if(tooSoon()) return; const id=openId; disarm(); closeSheet(); mutate(d=>{ const t=Date.now(); d.songs[id].deleted=true; d.songs[id].delAt=t; d.songs[id].ts=t; }); callout('RECORD PUT AWAY','info'); };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if($('#modal')&&!$('#modal .x')) return; if($('#modal')) closeModal(); else closeSheet(); } });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if($('#viewer')){ closeViewer(); return; } if($('#modal')&&!$('#modal .x')) return; if($('#modal')) closeModal(); else closeSheet(); } });
 if(window.visualViewport){ visualViewport.addEventListener('resize',fitSheet); visualViewport.addEventListener('scroll',fitSheet); }
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){ markSeen(); sync(); renderHeader(); } else if(dirty) sync(); }); // leaving with unsaved changes: save now
 window.addEventListener('focus',()=>sync());
@@ -1170,7 +1298,7 @@ setInterval(renderHeader,60000);
 /* test hook for scripted checks (hidden panes pause animations) */
 window.__jb={get doc(){ return doc; },set doc(v){ doc=C.merge(C.newDoc(),v); persist(); render(); },get me(){ return me; },get pair(){ return pair; },get net(){ return netState; },
   set fast(v){ FAST=!!v; },dropCoin,openSheet,closeSheet,sync,render,setMe(n){ me=n; LS.set('jb.me',n); render(); },
-  get playing(){ return playing; },get sp(){ return spCtl; },get localGhost(){ return [...localGhost]; },get current(){ return current; },saveNote,shareSong,takePair,showPairLink};
+  get playing(){ return playing; },get sp(){ return spCtl; },get localGhost(){ return [...localGhost]; },get current(){ return current; },saveNote,shareSong,takePair,showPairLink,set imgTimeout(v){ IMG_TMO=v; },get sending(){ return sending; }};
 
 (async function boot(){
   const hm=location.hash.match(/^#(pair|home)=([A-Za-z0-9_-]+)/);
